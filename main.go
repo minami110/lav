@@ -366,7 +366,7 @@ func installDirectory(baseDir, srcDir, appName, version string) error {
 func printUsage() {
 	fmt.Println("Usage:")
 	fmt.Println("  lav install <path> <app> <version>  Install a binary or folder")
-	fmt.Println("  lav use <app> <version>             Switch to a specific version")
+	fmt.Println("  lav use <app> [version]             Switch to a specific version")
 	fmt.Println("  lav list [app]                      List all apps or versions for a specific app")
 	fmt.Println("  lav current [app]                   Show current version for an app or all apps")
 	fmt.Println("  lav --version, -v                   Show version information")
@@ -391,17 +391,18 @@ func printInstallHelp() {
 }
 
 func printUseHelp() {
-	fmt.Println("Usage: lav use <app> <version>")
+	fmt.Println("Usage: lav use <app> [version]")
 	fmt.Println()
 	fmt.Println("Switch to a specific version of an installed application.")
+	fmt.Println("If version is omitted, shows an interactive version selector.")
 	fmt.Println()
 	fmt.Println("Arguments:")
 	fmt.Println("  <app>      Application name")
-	fmt.Println("  <version>  Version to switch to")
+	fmt.Println("  [version]  Version to switch to (optional)")
 	fmt.Println()
 	fmt.Println("Examples:")
-	fmt.Println("  lav use go 1.25.6")
-	fmt.Println("  lav use lav 0.0.1")
+	fmt.Println("  lav use go 1.25.6    # Switch to specific version")
+	fmt.Println("  lav use go           # Interactive version selection")
 }
 
 func printListHelp() {
@@ -497,26 +498,54 @@ func main() {
 		fmt.Printf("Installed %s version %s\n", appName, version)
 
 	case "use":
-		// Check for help flag
 		if len(os.Args) > 2 && (os.Args[2] == "--help" || os.Args[2] == "-h") {
 			printUseHelp()
 			return
 		}
 
-		if len(os.Args) != 4 {
-			fmt.Fprintln(os.Stderr, "Usage: lav use <app> <version>")
+		if len(os.Args) == 3 {
+			// インタラクティブモード
+			app := os.Args[2]
+			versions, err := listVersions(baseDir, app)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			if len(versions) == 0 {
+				fmt.Fprintf(os.Stderr, "No versions installed for %s\n", app)
+				os.Exit(1)
+			}
+			current, _ := getCurrentVersion(baseDir, app)
+
+			selected, cancelled, err := selectVersionInteractive(app, versions, current)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			if cancelled {
+				return
+			}
+
+			if err := switchVersion(baseDir, app, selected); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Switched %s to version %s\n", app, selected)
+
+		} else if len(os.Args) == 4 {
+			// 従来モード
+			app := os.Args[2]
+			version := os.Args[3]
+			if err := switchVersion(baseDir, app, version); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			fmt.Printf("Switched %s to version %s\n", app, version)
+
+		} else {
+			fmt.Fprintln(os.Stderr, "Usage: lav use <app> [version]")
 			os.Exit(1)
 		}
-
-		app := os.Args[2]
-		version := os.Args[3]
-
-		if err := switchVersion(baseDir, app, version); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-
-		fmt.Printf("Switched %s to version %s\n", app, version)
 
 	case "list":
 		// Check for help flag
