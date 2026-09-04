@@ -47,6 +47,7 @@ Show detailed help for each command:
 ```bash
 lav install --help
 lav use --help
+lav link --help
 lav list --help
 lav current --help
 ```
@@ -64,7 +65,7 @@ lav -v
 Install a binary into the lav structure and create a symbolic link in `~/.local/bin`:
 
 ```bash
-lav install <path> <app> <version>
+lav install <path> <app> <version> [--force]
 ```
 
 Example (self-install):
@@ -81,6 +82,24 @@ This creates the following structure:
 └── current -> 0.0.0
 
 ~/.local/bin/lav -> ../share/lav/lav/current/bin/lav
+```
+
+The binary is stored and linked under `<app>`, whatever the source file is called.
+Release assets that carry the version in their filename therefore stay reachable
+under a stable name across versions:
+
+```bash
+lav install ~/Downloads/myapp-1.2.0-x86_64.AppImage myapp 1.2.0
+# ~/.local/share/lav/myapp/1.2.0/bin/myapp
+# ~/.local/bin/myapp -> ../share/lav/myapp/current/bin/myapp
+```
+
+If `~/.local/bin/<app>` already exists and is not a symlink lav manages — a
+binary installed by hand before adopting lav, for instance — the install stops
+before anything is changed and says so. Pass `--force` to replace it:
+
+```bash
+lav install ~/Downloads/myapp-1.2.0-x86_64.AppImage myapp 1.2.0 --force
 ```
 
 ### Install Folder
@@ -112,7 +131,9 @@ This creates the following structure:
 ~/.local/bin/gofmt -> ../share/lav/go/current/bin/gofmt
 ```
 
-**Note:** The folder must contain a `bin/` directory.
+**Note:** The folder must contain a `bin/` directory. Links are created for the
+executable files in it; anything else there (documentation, data files,
+subdirectories) is copied but not linked.
 
 ### List Versions
 
@@ -143,6 +164,40 @@ lav current godot
 ```bash
 lav use godot 4.6.0
 ```
+
+Switching also recreates any missing `~/.local/bin` entry for the app. If the
+command still cannot be reached afterwards — something else occupies its name,
+or the version was installed by an older lav under a different filename — `lav
+use` reports it instead of exiting quietly.
+
+### Repair Links
+
+```bash
+lav link <app> [--force]
+```
+
+Recreates the `~/.local/bin` symlinks for the current version of an app and
+removes the ones lav left behind that no longer resolve. With no app name, every
+installed app is processed.
+
+A version installed by an older lav kept the source filename (for example
+`bin/myapp-1.2.0-x86_64.AppImage`), so nothing resolves through
+`current/bin/<app>`. `lav link` repairs such a version by renaming that file to
+`bin/<app>`:
+
+```bash
+lav link myapp
+# myapp: renamed bin/myapp-1.2.0-x86_64.AppImage to bin/myapp
+# myapp: linked /home/user/.local/bin/myapp
+```
+
+The rename only happens when `~/.local/bin/<app>` is a symlink lav created that
+no longer resolves. A package whose command is deliberately named differently
+from the app — `ripgrep` shipping `bin/rg` — has no such link and is left
+exactly as it is.
+
+A command name can only belong to one app: installing an app that ships a
+command another lav app already provides is refused unless you pass `--force`.
 
 ## Environment Variables
 
