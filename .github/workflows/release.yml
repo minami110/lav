@@ -1,0 +1,116 @@
+name: Release
+
+on:
+  push:
+    tags:
+      # Narrow enough that a tag like "video-demo" cannot start a release.
+      - 'v[0-9]*'
+
+# Two runs for the same tag would race to publish the same assets, but a run
+# already publishing must never be cancelled.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    # The default token is read-only for this repository, so creating a release
+    # needs this. Scoped to the job so a later job does not inherit write.
+    permissions:
+      contents: write
+
+    # Naming the shell gets `-o pipefail` as well as `-e`, which the implicit
+    # default does not set.
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      # Actions are pinned by commit: this job holds a write token and produces
+      # the binaries people download, so a moved tag upstream must not change
+      # what runs here.
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # gh takes its credential from GH_TOKEN, so the write token has no
+          # reason to sit in .git/config while the build and tests run.
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Check the tag is a version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::'$TAG' is not a version tag; expected vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-prerelease"
+            exit 1
+          fi
+
+      - name: Run tests
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: Build
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist build
+
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os="${target%/*}"
+            arch="${target#*/}"
+            name="lav_${TAG}_${os}_${arch}"
+
+            # Stage outside dist/ so that dist/ holds nothing but release assets.
+            stage="build/$name"
+            mkdir -p "$stage"
+
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build \
+              -trimpath \
+              -ldflags "-s -w -X main.version=$TAG" \
+              -o "$stage/lav" .
+            cp README.md LICENSE "$stage/"
+
+            # Archived with a top-level directory, so extracting it next to
+            # another one cannot overwrite the reader's own README or LICENSE.
+            tar -czf "dist/$name.tar.gz" -C build "$name"
+            echo "built $name.tar.gz"
+          done
+
+          # Recorded as bare filenames: `sha256sum -c` runs where the files
+          # were downloaded, not in a dist/ directory the user does not have.
+          (cd dist && sha256sum ./*.tar.gz | sed 's| \./| |' > checksums.txt)
+          cat dist/checksums.txt
+
+      - name: Publish
+        env:
+          TAG: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          args=(--generate-notes)
+          # v0.2.0-rc.1 must not become the release people are pointed at.
+          case "$TAG" in
+            *-*) args+=(--prerelease) ;;
+          esac
+
+          if output=$(gh release create "$TAG" "${args[@]}" dist/* 2>&1); then
+            printf '%s\n' "$output"
+            exit 0
+          fi
+          printf '%s\n' "$output" >&2
+
+          # A retried run, or a re-pushed tag, meets a release that is already
+          # there; replace its assets. Asking whether it exists beforehand
+          # cannot tell "no release" apart from a failed API call, and would
+          # turn a hiccup into a failed release.
+          printf '%s' "$output" | grep -Eqi 'already[ _]exists' || exit 1
+
+          echo "release $TAG already exists; replacing its assets"
+          gh release upload "$TAG" dist/* --clobber

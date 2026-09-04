@@ -33,3 +33,7 @@ go.work.sum
 
 
 /lav
+
+# Release build artifacts
+/dist/
+/build/

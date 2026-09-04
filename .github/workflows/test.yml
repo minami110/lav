@@ -3,10 +3,20 @@ name: Test
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Superseded pull request runs are worth cancelling; a run for a commit on
+  # main is not, or that commit ends up with no test result at all.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
-    if: github.event.pull_request.draft == false
+    # Draft pull requests are skipped; every other event runs. Comparing the
+    # draft field alone would rely on a null comparing equal to false.
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
 
     steps:
@@ -16,7 +26,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24.0'
+          go-version-file: go.mod
 
       - name: Run tests
         run: go test ./...

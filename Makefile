@@ -2,7 +2,12 @@
 
 BINARY_NAME=lav
 INSTALL_DIR=$(HOME)/.local/bin
-VERSION=0.0.0
+
+# Taken from the repository, so a build carries the commit it came from rather
+# than a fixed number. Falls back to "dev" outside a checkout. Assigned once:
+# with ?= the command would run again for every use, and a tree that turned
+# dirty in between would stamp the binary and its directory differently.
+VERSION := $(or $(VERSION),$(shell git describe --tags --always --dirty 2>/dev/null || echo dev))
 
 build:
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BINARY_NAME) .
