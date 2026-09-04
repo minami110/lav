@@ -20,10 +20,14 @@ type binLinkStatus int
 const (
 	// binLinkAbsent means nothing occupies the path.
 	binLinkAbsent binLinkStatus = iota
-	// binLinkManaged means the path is a symlink pointing inside baseDir.
+	// binLinkManaged means the path is a symlink pointing inside the app's own
+	// directory.
 	binLinkManaged
-	// binLinkForeign means the path is a symlink pointing outside baseDir,
-	// e.g. one the user created by hand.
+	// binLinkOtherApp means the path is a symlink belonging to a different app
+	// managed by lav, i.e. two apps ship a command of the same name.
+	binLinkOtherApp
+	// binLinkForeign means the path is a symlink pointing outside the lav
+	// directory, e.g. one the user created by hand.
 	binLinkForeign
 	// binLinkRegularFile means the path is a real file, e.g. a binary installed
 	// by hand before adopting lav.
@@ -63,6 +67,15 @@ func (r appLinkReport) Warnings(app string) []string {
 	return out
 }
 
+// Failed reports whether a command lav was asked to provide is missing.
+//
+// A dangling leftover is not a failure: a version that no longer ships a
+// command legitimately leaves its old link behind, and failing on that would
+// make every later switch look broken.
+func (r appLinkReport) Failed() bool {
+	return len(r.Errs) > 0
+}
+
 // isUnder reports whether path is parent itself or lies inside it. Both are
 // expected to be absolute and cleaned.
 func isUnder(parent, path string) bool {
@@ -98,8 +111,9 @@ func binLinkTarget(binDir, baseDir, app, name string) string {
 }
 
 // classifyBinLink reports what occupies linkPath, along with the absolute path
-// its target resolves to when it is a symlink.
-func classifyBinLink(baseDir, linkPath string) (binLinkStatus, string, error) {
+// its target resolves to when it is a symlink. Ownership is decided per app:
+// a link belonging to another app is not this app's to take.
+func classifyBinLink(baseDir, app, linkPath string) (binLinkStatus, string, error) {
 	info, err := os.Lstat(linkPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -114,10 +128,14 @@ func classifyBinLink(baseDir, linkPath string) (binLinkStatus, string, error) {
 			return binLinkOther, "", fmt.Errorf("failed to read symlink %s: %w", linkPath, err)
 		}
 		resolved := resolveLinkTarget(filepath.Dir(linkPath), target)
-		if isUnder(baseDir, resolved) {
+		switch {
+		case isUnder(filepath.Join(baseDir, app), resolved):
 			return binLinkManaged, resolved, nil
+		case isUnder(baseDir, resolved):
+			return binLinkOtherApp, resolved, nil
+		default:
+			return binLinkForeign, resolved, nil
 		}
-		return binLinkForeign, resolved, nil
 	}
 
 	if info.Mode().IsRegular() {
@@ -129,9 +147,9 @@ func classifyBinLink(baseDir, linkPath string) (binLinkStatus, string, error) {
 // checkBinLink reports why <binDir>/<name> cannot be turned into a lav-managed
 // symlink, or nil when it can. It never writes anything, so callers can use it
 // to validate before mutating any state.
-func checkBinLink(binDir, baseDir, name string, force bool) error {
+func checkBinLink(binDir, baseDir, app, name string, force bool) error {
 	linkPath := filepath.Join(binDir, name)
-	status, target, err := classifyBinLink(baseDir, linkPath)
+	status, target, err := classifyBinLink(baseDir, app, linkPath)
 	if err != nil {
 		return err
 	}
@@ -144,6 +162,11 @@ func checkBinLink(binDir, baseDir, name string, force bool) error {
 			return nil
 		}
 		return fmt.Errorf("%s exists and is not a symlink; remove it and re-run, or pass --force to replace it", linkPath)
+	case binLinkOtherApp:
+		if force {
+			return nil
+		}
+		return fmt.Errorf("%s is the command of another app installed by lav (%s); pass --force to point it at %s instead", linkPath, target, app)
 	case binLinkForeign:
 		if force {
 			return nil
@@ -156,10 +179,10 @@ func checkBinLink(binDir, baseDir, name string, force bool) error {
 
 // checkBinLinks validates every name up front and reports all the problems at
 // once, so a conflict cannot surface only after part of an install is done.
-func checkBinLinks(binDir, baseDir string, names []string, force bool) error {
+func checkBinLinks(binDir, baseDir, app string, names []string, force bool) error {
 	var errs []error
 	for _, name := range names {
-		if err := checkBinLink(binDir, baseDir, name, force); err != nil {
+		if err := checkBinLink(binDir, baseDir, app, name, force); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -193,14 +216,14 @@ func replaceSymlink(linkPath, target string) error {
 // ensureBinLink makes <binDir>/<name> a symlink to the app's current bin entry.
 // It returns whether the link had to be written.
 func ensureBinLink(binDir, baseDir, app, name string, force bool) (bool, error) {
-	if err := checkBinLink(binDir, baseDir, name, force); err != nil {
+	if err := checkBinLink(binDir, baseDir, app, name, force); err != nil {
 		return false, err
 	}
 
 	linkPath := filepath.Join(binDir, name)
 	target := binLinkTarget(binDir, baseDir, app, name)
 
-	status, resolved, err := classifyBinLink(baseDir, linkPath)
+	status, resolved, err := classifyBinLink(baseDir, app, linkPath)
 	if err != nil {
 		return false, err
 	}
@@ -309,10 +332,26 @@ func danglingAppLinks(binDir, baseDir, app string) ([]string, error) {
 //
 // The file is renamed to bin/<app>, which leaves the version laid out exactly
 // like one installed by the current lav — a single command named after the app.
-// It only acts when the version holds exactly one regular executable, since
-// with several there is nothing to infer. The old name is returned, or "" when
-// nothing needed or could be done.
-func repairLegacyBinName(baseDir, app string) (string, error) {
+// The old name is returned, or "" when nothing needed or could be done.
+//
+// Renaming is only safe with evidence that <app> is the name the command is
+// expected to have: <binDir>/<app> must be a link lav created for this app that
+// no longer resolves. A package whose binary is deliberately named differently
+// (ripgrep shipping bin/rg) has no such link, and its command is left alone.
+func repairLegacyBinName(binDir, baseDir, app string) (string, error) {
+	linkPath := filepath.Join(binDir, app)
+	status, resolved, err := classifyBinLink(baseDir, app, linkPath)
+	if err != nil || status != binLinkManaged {
+		return "", nil
+	}
+	if resolved != filepath.Join(baseDir, app, currentName, "bin", app) {
+		return "", nil
+	}
+	if _, err := os.Stat(linkPath); !errors.Is(err, fs.ErrNotExist) {
+		// The command already resolves; there is nothing to repair.
+		return "", nil
+	}
+
 	version, err := getCurrentVersion(baseDir, app)
 	if err != nil {
 		return "", err
@@ -321,22 +360,24 @@ func repairLegacyBinName(baseDir, app string) (string, error) {
 		return "", nil
 	}
 
-	binDir := filepath.Join(baseDir, app, version, "bin")
-	appPath := filepath.Join(binDir, app)
+	versionBinDir := filepath.Join(baseDir, app, version, "bin")
+	appPath := filepath.Join(versionBinDir, app)
 	if _, err := os.Lstat(appPath); err == nil {
 		return "", nil
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return "", fmt.Errorf("failed to inspect %s: %w", appPath, err)
 	}
 
-	names, err := commandNames(binDir)
+	// With several commands there is nothing to infer about which one the app
+	// name refers to.
+	names, err := commandNames(versionBinDir)
 	if err != nil || len(names) != 1 {
 		return "", nil
 	}
 
 	// Only rename a real file: a symlink here is something lav did not put
 	// there, and following it would move the wrong thing.
-	oldPath := filepath.Join(binDir, names[0])
+	oldPath := filepath.Join(versionBinDir, names[0])
 	info, err := os.Lstat(oldPath)
 	if err != nil || !info.Mode().IsRegular() {
 		return "", nil
@@ -366,7 +407,7 @@ func linkApp(binDir, baseDir, app string, force, repair bool) (appLinkReport, er
 
 	var report appLinkReport
 	if repair {
-		repaired, err := repairLegacyBinName(baseDir, app)
+		repaired, err := repairLegacyBinName(binDir, baseDir, app)
 		if err != nil {
 			report.Errs = append(report.Errs, err)
 		}

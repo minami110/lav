@@ -191,6 +191,14 @@ lav link myapp
 # myapp: linked /home/user/.local/bin/myapp
 ```
 
+The rename only happens when `~/.local/bin/<app>` is a symlink lav created that
+no longer resolves. A package whose command is deliberately named differently
+from the app — `ripgrep` shipping `bin/rg` — has no such link and is left
+exactly as it is.
+
+A command name can only belong to one app: installing an app that ships a
+command another lav app already provides is refused unless you pass `--force`.
+
 ## Environment Variables
 
 - `LAV_ROOT`: Set this to change the base directory (highest priority)

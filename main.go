@@ -204,7 +204,7 @@ func installBinary(binDir, baseDir, binaryPath, appName, version string, force b
 
 	// Everything that can fail is checked before any state changes: an install
 	// must never take effect and report failure at the same time.
-	if err := checkBinLinks(binDir, baseDir, []string{appName}, force); err != nil {
+	if err := checkBinLinks(binDir, baseDir, appName, []string{appName}, force); err != nil {
 		return err
 	}
 	if err := checkCurrentReplaceable(appDir); err != nil {
@@ -222,13 +222,42 @@ func installBinary(binDir, baseDir, binaryPath, appName, version string, force b
 		return fmt.Errorf("failed to copy binary: %w", err)
 	}
 
-	// Link before repointing current: should this fail, the app keeps running
-	// the version it was on and the exit status matches the actual state.
-	if report := linkBinNames(binDir, baseDir, appName, []string{appName}, force); len(report.Errs) > 0 {
+	return finishInstall(binDir, baseDir, appName, version, []string{appName}, force)
+}
+
+// finishInstall links the app's commands and only then makes the new version
+// current.
+//
+// Linking first means a failure leaves the app running the version it was on,
+// so the exit status matches the actual state. On a first install there is no
+// such version, and the links just created would point at a current symlink
+// that was never made, so they are taken back out.
+func finishInstall(binDir, baseDir, appName, version string, names []string, force bool) error {
+	previous, err := getCurrentVersion(baseDir, appName)
+	if err != nil {
+		return err
+	}
+
+	rollback := func(linked []string) {
+		if previous != "" {
+			return
+		}
+		for _, name := range linked {
+			os.Remove(filepath.Join(binDir, name))
+		}
+	}
+
+	report := linkBinNames(binDir, baseDir, appName, names, force)
+	if len(report.Errs) > 0 {
+		rollback(report.Linked)
 		return errors.Join(report.Errs...)
 	}
 
-	return repointCurrent(appDir, version)
+	if err := repointCurrent(filepath.Join(baseDir, appName), version); err != nil {
+		rollback(report.Linked)
+		return err
+	}
+	return nil
 }
 
 // copyFileMode copies src to dst with the given permissions.
@@ -363,7 +392,7 @@ func installDirectory(binDir, baseDir, srcDir, appName, version string, force bo
 	}
 
 	appDir := filepath.Join(baseDir, appName)
-	if err := checkBinLinks(binDir, baseDir, names, force); err != nil {
+	if err := checkBinLinks(binDir, baseDir, appName, names, force); err != nil {
 		return err
 	}
 	if err := checkCurrentReplaceable(appDir); err != nil {
@@ -379,11 +408,7 @@ func installDirectory(binDir, baseDir, srcDir, appName, version string, force bo
 		return fmt.Errorf("failed to copy directory: %w", err)
 	}
 
-	if report := linkBinNames(binDir, baseDir, appName, names, force); len(report.Errs) > 0 {
-		return errors.Join(report.Errs...)
-	}
-
-	return repointCurrent(appDir, version)
+	return finishInstall(binDir, baseDir, appName, version, names, force)
 }
 
 // cmdArgs is the result of splitting a subcommand's arguments into flags and
@@ -478,7 +503,10 @@ func printLinkHelp() {
 	fmt.Println("If app is omitted, every installed application is processed.")
 	fmt.Println()
 	fmt.Println("An app installed by an older lav, which stored the binary under its")
-	fmt.Println("source filename, is repaired by renaming that file to bin/<app>.")
+	fmt.Println("source filename, is repaired by renaming that file to bin/<app>. This")
+	fmt.Println("only happens when ~/.local/bin/<app> is a lav symlink that no longer")
+	fmt.Println("resolves, so a package whose command is named differently from the app")
+	fmt.Println("is left as it is.")
 	fmt.Println()
 	fmt.Println("Arguments:")
 	fmt.Println("  [app]  Optional application name")
@@ -628,15 +656,13 @@ func runUse(baseDir string, args []string) {
 
 	// The version switch succeeded, but reporting success while the command is
 	// not actually reachable is what makes a broken link invisible.
-	warnings := report.Warnings(app)
-	if len(warnings) == 0 {
-		return
-	}
-	for _, warning := range warnings {
+	for _, warning := range report.Warnings(app) {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", warning)
 	}
-	fmt.Fprintf(os.Stderr, "%s is not fully reachable from %s\n", app, binDir)
-	os.Exit(1)
+	if report.Failed() {
+		fmt.Fprintf(os.Stderr, "%s is not fully reachable from %s\n", app, binDir)
+		os.Exit(1)
+	}
 }
 
 func runLink(baseDir string, args []string) {
@@ -734,6 +760,9 @@ func runList(baseDir string, args []string) {
 		}
 	case 1:
 		app := parsed.positional[0]
+		if err := validateAppName(app); err != nil {
+			fatal(err)
+		}
 		versions, err := listVersions(baseDir, app)
 		if err != nil {
 			fatal(err)
@@ -775,6 +804,9 @@ func runCurrent(baseDir string, args []string) {
 		}
 	case 1:
 		app := parsed.positional[0]
+		if err := validateAppName(app); err != nil {
+			fatal(err)
+		}
 		current, err := getCurrentVersion(baseDir, app)
 		if err != nil {
 			fatal(err)

@@ -417,6 +417,110 @@ func TestLinkApp_RepairsLegacyLayout(t *testing.T) {
 		filepath.Join(baseDir, "myapp", "1.3.0", "bin", "myapp"))
 }
 
+// TestLinkApp_KeepsACommandNamedAfterSomethingElse guards the legacy repair:
+// a package whose binary is deliberately named differently from the app
+// (ripgrep ships bin/rg) looks exactly like a legacy install if the only
+// signal is "one executable, not named after the app".
+func TestLinkApp_KeepsACommandNamedAfterSomethingElse(t *testing.T) {
+	binDir, baseDir := newDirs(t)
+
+	src := t.TempDir()
+	writeExecutable(t, filepath.Join(src, "bin", "rg"), "rg")
+	if err := installDirectory(binDir, baseDir, src, "ripgrep", "14.1.0", false); err != nil {
+		t.Fatalf("install failed: %v", err)
+	}
+
+	report, err := linkApp(binDir, baseDir, "ripgrep", false, true)
+	if err != nil {
+		t.Fatalf("link failed: %v", err)
+	}
+	if report.Repaired != "" {
+		t.Errorf("renamed %q: a command named differently from its app must be left alone", report.Repaired)
+	}
+
+	assertLinkResolves(t, filepath.Join(binDir, "rg"),
+		filepath.Join(baseDir, "ripgrep", "14.1.0", "bin", "rg"))
+	if got := dirEntries(t, binDir); !slices.Equal(got, []string{"rg"}) {
+		t.Errorf("bin dir contains %v, want [rg]: the user's command must survive", got)
+	}
+}
+
+func TestInstall_RefusesToTakeOverAnotherAppsCommand(t *testing.T) {
+	binDir, baseDir := newDirs(t)
+
+	first := t.TempDir()
+	writeExecutable(t, filepath.Join(first, "bin", "gofmt"), "appx gofmt")
+	if err := installDirectory(binDir, baseDir, first, "appx", "1.0.0", false); err != nil {
+		t.Fatalf("install appx failed: %v", err)
+	}
+
+	second := t.TempDir()
+	writeExecutable(t, filepath.Join(second, "bin", "gofmt"), "appy gofmt")
+	if err := installDirectory(binDir, baseDir, second, "appy", "1.0.0", false); err == nil {
+		t.Fatal("expected a refusal: two apps shipping the same command is a conflict the user cannot see afterwards")
+	}
+
+	assertLinkResolves(t, filepath.Join(binDir, "gofmt"),
+		filepath.Join(baseDir, "appx", "1.0.0", "bin", "gofmt"))
+	assertNotExist(t, filepath.Join(baseDir, "appy"), "the refused install must leave nothing behind")
+
+	// Taking it over is a deliberate act.
+	if err := installDirectory(binDir, baseDir, second, "appy", "1.0.0", true); err != nil {
+		t.Fatalf("install appy --force failed: %v", err)
+	}
+	assertLinkResolves(t, filepath.Join(binDir, "gofmt"),
+		filepath.Join(baseDir, "appy", "1.0.0", "bin", "gofmt"))
+}
+
+// TestUseVersion_DroppedCommandIsOnlyAWarning covers switching to a version
+// that no longer ships one of the commands: its leftover link is stale, but the
+// switch itself worked and must not be reported as a failure.
+func TestUseVersion_DroppedCommandIsOnlyAWarning(t *testing.T) {
+	binDir, baseDir := newDirs(t)
+
+	old := t.TempDir()
+	writeExecutable(t, filepath.Join(old, "bin", "a"), "a")
+	writeExecutable(t, filepath.Join(old, "bin", "b"), "b")
+	if err := installDirectory(binDir, baseDir, old, "tool", "1.0.0", false); err != nil {
+		t.Fatalf("install 1.0.0 failed: %v", err)
+	}
+
+	current := t.TempDir()
+	writeExecutable(t, filepath.Join(current, "bin", "a"), "a")
+	if err := installDirectory(binDir, baseDir, current, "tool", "2.0.0", false); err != nil {
+		t.Fatalf("install 2.0.0 failed: %v", err)
+	}
+
+	report, err := useVersion(binDir, baseDir, "tool", "2.0.0", false)
+	if err != nil {
+		t.Fatalf("use failed: %v", err)
+	}
+	if report.Failed() {
+		t.Errorf("a leftover link for a command 2.0.0 does not ship must not fail the switch: %v", report.Errs)
+	}
+	if !slices.Contains(report.Dangling, "b") {
+		t.Errorf("dangling links are %v, want b to be reported", report.Dangling)
+	}
+	assertLinkResolves(t, filepath.Join(binDir, "a"),
+		filepath.Join(baseDir, "tool", "2.0.0", "bin", "a"))
+}
+
+func TestFinishInstall_TakesBackItsLinksWhenAFirstInstallCannotFinish(t *testing.T) {
+	binDir, baseDir := newDirs(t)
+	writeExecutable(t, filepath.Join(baseDir, "myapp", "1.0.0", "bin", "myapp"), "v1.0.0")
+
+	// Something occupies current, so it cannot be pointed at the new version.
+	if err := os.MkdirAll(filepath.Join(baseDir, "myapp", currentName), 0755); err != nil {
+		t.Fatalf("failed to create directory: %v", err)
+	}
+
+	if err := finishInstall(binDir, baseDir, "myapp", "1.0.0", []string{"myapp"}, false); err == nil {
+		t.Fatal("expected an error")
+	}
+	assertNotExist(t, filepath.Join(binDir, "myapp"),
+		"a first install that cannot finish must not leave a command pointing at a current that was never created")
+}
+
 func TestLinkApp_LeavesForeignEntriesAlone(t *testing.T) {
 	binDir, baseDir := newDirs(t)
 	if err := installBinary(binDir, baseDir, sourceBinary(t, "myapp", "v1.0.0"),
