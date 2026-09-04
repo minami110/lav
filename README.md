@@ -29,18 +29,21 @@ it targets **Linux and macOS** (amd64 and arm64).
 ### From a release
 
 Download the archive for your platform from the
-[releases page](https://github.com/minami110/lav/releases).
+[releases page](https://github.com/minami110/lav/releases), along with the
+`checksums.txt` published beside it.
 
-```bash
-tar xzf lav_v0.1.0_linux_amd64.tar.gz
-cd lav_v0.1.0_linux_amd64
-```
-
-To check the download against the `checksums.txt` published with it:
+Check the archive before unpacking it:
 
 ```bash
 grep lav_v0.1.0_linux_amd64.tar.gz checksums.txt | sha256sum -c
 # macOS: grep lav_v0.1.0_darwin_arm64.tar.gz checksums.txt | shasum -a 256 -c
+```
+
+Then extract it:
+
+```bash
+tar xzf lav_v0.1.0_linux_amd64.tar.gz
+cd lav_v0.1.0_linux_amd64
 ```
 
 On macOS, an archive extracted with Finder carries a quarantine flag and the
@@ -64,8 +67,10 @@ make build
 make install
 ```
 
-This installs lav to `~/.local/bin/lav`. The version is taken from
-`git describe`, so a build from a checkout is never mistaken for a release.
+This installs lav to `~/.local/bin/lav`. The version comes from `git describe`,
+so a build carries the commit it came from — `v0.1.0-3-gabc1234-dirty` rather
+than a fixed number. At a clean checkout of a tagged commit it is the tag
+itself, matching the released binary.
 
 ## Usage
 

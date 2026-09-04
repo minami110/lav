@@ -33,6 +33,10 @@ jobs:
       # what runs here.
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # gh takes its credential from GH_TOKEN, so the write token has no
+          # reason to sit in .git/config while the build and tests run.
+          persist-credentials: false
 
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -90,17 +94,23 @@ jobs:
           TAG: ${{ github.ref_name }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            # Re-running on a tag that already has a release replaces the
-            # assets; creating it again would fail as already_exists.
-            gh release upload "$TAG" dist/* --clobber
-            exit 0
-          fi
-
           args=(--generate-notes)
           # v0.2.0-rc.1 must not become the release people are pointed at.
           case "$TAG" in
             *-*) args+=(--prerelease) ;;
           esac
 
-          gh release create "$TAG" "${args[@]}" dist/*
+          if output=$(gh release create "$TAG" "${args[@]}" dist/* 2>&1); then
+            printf '%s\n' "$output"
+            exit 0
+          fi
+          printf '%s\n' "$output" >&2
+
+          # A retried run, or a re-pushed tag, meets a release that is already
+          # there; replace its assets. Asking whether it exists beforehand
+          # cannot tell "no release" apart from a failed API call, and would
+          # turn a hiccup into a failed release.
+          printf '%s' "$output" | grep -Eqi 'already[ _]exists' || exit 1
+
+          echo "release $TAG already exists; replacing its assets"
+          gh release upload "$TAG" dist/* --clobber
