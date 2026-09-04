@@ -23,12 +23,49 @@ A simple tool to manage local application versions using symbolic links.
 
 ## Installation
 
+lav manages `~/.local/bin` and `~/.local/share` and relies on symbolic links, so
+it targets **Linux and macOS** (amd64 and arm64).
+
+### From a release
+
+Download the archive for your platform from the
+[releases page](https://github.com/minami110/lav/releases).
+
+```bash
+tar xzf lav_v0.1.0_linux_amd64.tar.gz
+cd lav_v0.1.0_linux_amd64
+```
+
+To check the download against the `checksums.txt` published with it:
+
+```bash
+grep lav_v0.1.0_linux_amd64.tar.gz checksums.txt | sha256sum -c
+# macOS: grep lav_v0.1.0_darwin_arm64.tar.gz checksums.txt | shasum -a 256 -c
+```
+
+On macOS, an archive extracted with Finder carries a quarantine flag and the
+binary refuses to run. Clear it, or extract with `tar` in a terminal instead:
+
+```bash
+xattr -d com.apple.quarantine ./lav
+```
+
+Then let lav manage itself, and make sure `~/.local/bin` is on your `PATH`:
+
+```bash
+./lav install ./lav lav v0.1.0
+export PATH="$HOME/.local/bin:$PATH"   # add this to your shell profile
+```
+
+### From source
+
 ```bash
 make build
 make install
 ```
 
-This will install lav to `~/.local/bin/lav`.
+This installs lav to `~/.local/bin/lav`. The version is taken from
+`git describe`, so a build from a checkout is never mistaken for a release.
 
 ## Usage
 
@@ -204,6 +241,35 @@ command another lav app already provides is refused unless you pass `--force`.
 - `LAV_ROOT`: Set this to change the base directory (highest priority)
 - `XDG_DATA_HOME`: Data directory following XDG Base Directory specification (`$XDG_DATA_HOME/lav` will be used)
 - Default: `~/.local/share/lav`
+
+## Releasing
+
+Pushing a version tag builds the binaries and publishes a GitHub Release with
+the archives and a `checksums.txt`.
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+- The tag must be `vMAJOR.MINOR.PATCH`, optionally with a `-suffix`. Anything
+  else is rejected by the workflow, and a tag carrying a suffix (`v0.2.0-rc.1`)
+  is published as a prerelease.
+- Tag a commit that **contains `.github/workflows/release.yml`**. A tag on an
+  older commit starts nothing at all, with no error anywhere.
+- The version string is the tag itself, so the release above is installed as
+  `lav install ./lav lav v0.1.0`.
+- Tag a commit whose tests pass. The workflow runs them again and publishes
+  nothing if they fail, but by then the tag already exists.
+
+To redo a release, remove it together with its tag and push the tag again:
+
+```bash
+gh release delete v0.1.0 --cleanup-tag --yes
+```
+
+Re-running the workflow on a tag that already has a release replaces its
+assets rather than failing.
 
 ## License
 

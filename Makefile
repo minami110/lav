@@ -2,7 +2,10 @@
 
 BINARY_NAME=lav
 INSTALL_DIR=$(HOME)/.local/bin
-VERSION=0.0.0
+
+# Derived from the repository so a local build is never mistaken for a release.
+# Falls back to "dev" outside a checkout.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 build:
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BINARY_NAME) .
